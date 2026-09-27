@@ -16349,9 +16349,9 @@ mod test_close_period;
 #[cfg(test)]
 mod test_deferred_priority;
 #[cfg(test)]
-mod test_merkle_proof_depth;
+mod test_deposit_revenue_adversarial;
 #[cfg(test)]
-mod test_merkle_root_rotation;
+mod test_merkle_proof_depth;
 #[cfg(test)]
 mod test_merkle_root_rotation;
 #[cfg(test)]
