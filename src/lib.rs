@@ -370,7 +370,7 @@ pub mod merkle_helpers;
 /// Security assertion helpers for production validation.
 pub mod security_assertions;
 
-#[cfg(feature = "kani")]
+#[cfg(any(feature = "kani", test))]
 pub mod kani_harness;
 
 #[cfg(test)]
