@@ -702,5 +702,26 @@ mod tests {
                 assert_eq!(storage.offering_issuer_lookup, baseline.offering_issuer_lookup);
             }
         }
+
+        #[test]
+        fn prop_assert_issuer_lookup_consistent_adversarial(
+            offering_issuer in any::<AddrId>(),
+            lookup_issuer in any::<AddrId>(),
+        ) {
+            let storage = StorageModel {
+                pending: None,
+                offering: OfferingState { issuer: offering_issuer },
+                offering_issuer_lookup: lookup_issuer,
+            };
+            
+            if offering_issuer == lookup_issuer {
+                assert_issuer_lookup_consistent(&storage);
+            } else {
+                let result = std::panic::catch_unwind(|| {
+                    assert_issuer_lookup_consistent(&storage);
+                });
+                assert!(result.is_err(), "inconsistent lookup should panic");
+            }
+        }
     }
 }
