@@ -16353,8 +16353,9 @@ mod test_merkle_proof_depth;
 #[cfg(test)]
 mod test_merkle_root_rotation;
 #[cfg(test)]
-mod test_merkle_root_rotation;
+mod test_offering_count_adversarial;
 #[cfg(test)]
 mod test_snapshot_voting_weight;
 #[cfg(test)]
 mod test_storage_layout_version;
+
