@@ -16058,3 +16058,5 @@ mod test_storage_layout_version;
 
 #[cfg(test)]
 mod secondary_market_royalty_adversarial_test;
+#[cfg(test)]
+mod test_offering_count_adversarial;
