@@ -419,6 +419,8 @@ mod test_compute_share_decomposition_prop;
 #[cfg(test)]
 mod test_disclosure;
 #[cfg(test)]
+mod test_get_payment_token;
+#[cfg(test)]
 mod test_faucet_metrics;
 /// Self-test module providing a `self_test()` entrypoint that runs contract-internal
 #[cfg(test)]
