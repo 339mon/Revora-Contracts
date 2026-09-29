@@ -212,3 +212,226 @@ mod proofs {
         assert_eq!(round, amount);
     }
 }
+// ---------------------------------------------------------------------------
+// Adversarial unit tests for the `share_and_dust` reconstruction contract
+// (Issue #1053).
+//
+// The Kani harness above proves the invariant symbolically for
+// `amount ∈ [-2^32, 2^32]` and `bps ∈ [0, 10_000]`. The proofs are only run in
+// `cfg(kani)` builds, so the same contract has no coverage in a normal
+// `cargo test` run. These tests pin the concrete edges the symbolic proof
+// abstracts away:
+//
+// * short-circuit inputs (`amount == 0`, `bps == 0`) return `(0, 0)` rather
+//   than a non-zero dust;
+// * the invariant survives negative amounts and the half-unit rounding edge
+//   (`RoundHalfUp` rounds away from zero at exactly 5_000 residue);
+// * `result` is always clamped into `[min(0, amount), max(0, amount)]`;
+// * `bps > MAX_BPS` is intentionally out of the invariant's domain: the share
+//   collapses to `0` and the entire product becomes dust;
+// * `i128::MIN` is handled by the decomposition path in `compute_share` but
+//   *panics* on the naive `share_and_dust` multiply — the hazard the module
+//   docs call out is pinned here as an executable expectation.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod share_and_dust_adversarial_tests {
+    use super::*;
+
+    /// Domain where `amount * bps` is guaranteed to fit in `i128` and therefore
+    /// the invariant `result * BPS_DENOM + dust == amount * bps` must hold.
+    fn assert_invariants(amount: i128, bps: u32, mode: RoundingMode) {
+        let (result, dust) = share_and_dust(amount, bps, mode);
+        let product = amount * bps as i128;
+
+        // Exact reconstruction: no value is created or destroyed.
+        assert_eq!(
+            result * BPS_DENOM + dust,
+            product,
+            "reconstruction failed for amount={amount}, bps={bps}, mode={mode:?}"
+        );
+
+        // Result never leaves the [min(0, amount), max(0, amount)] band.
+        let lo = core::cmp::min(0, amount);
+        let hi = core::cmp::max(0, amount);
+        assert!(
+            result >= lo && result <= hi,
+            "result {result} outside [{lo}, {hi}] for amount={amount}, bps={bps}"
+        );
+
+        // Sub-unit residue for in-domain, non-degenerate inputs.
+        if amount != 0 && bps != 0 && bps <= MAX_BPS {
+            assert!(
+                dust.abs() < BPS_DENOM,
+                "dust {dust} not bounded for amount={amount}, bps={bps}"
+            );
+        } else if amount == 0 || bps == 0 {
+            assert_eq!(result, 0);
+            assert_eq!(dust, 0);
+        }
+    }
+
+    #[test]
+    fn zero_amount_or_zero_bps_short_circuits() {
+        for mode in [RoundingMode::Truncation, RoundingMode::RoundHalfUp] {
+            assert_eq!(share_and_dust(0, 0, mode), (0, 0));
+            assert_eq!(share_and_dust(0, MAX_BPS, mode), (0, 0));
+            assert_eq!(share_and_dust(123_456, 0, mode), (0, 0));
+            assert_eq!(share_and_dust(-123_456, 0, mode), (0, 0));
+        }
+    }
+
+    #[test]
+    fn truncation_edges_reconstruct_exactly() {
+        let cases: [(i128, u32); 10] = [
+            (1, 1),
+            (9_999, 1),
+            (10_000, 1),
+            (999, 9_999),
+            (9_999, 10_000),
+            (1, 10_000),
+            (-1, 1),
+            (-9_999, 1),
+            (-10_000, 1),
+            (-9_999, 10_000),
+        ];
+        for (amount, bps) in cases {
+            assert_invariants(amount, bps, RoundingMode::Truncation);
+        }
+    }
+
+    #[test]
+    fn round_half_up_edges_reconstruct_exactly() {
+        let cases: [(i128, u32); 10] = [
+            (5_000, 1),
+            (4_999, 1),
+            (9_999, 1),
+            (1, 9_999),
+            (1, 10_000),
+            (9_999, 10_000),
+            (-5_000, 1),
+            (-4_999, 1),
+            (-1, 9_999),
+            (-9_999, 10_000),
+        ];
+        for (amount, bps) in cases {
+            assert_invariants(amount, bps, RoundingMode::RoundHalfUp);
+        }
+    }
+
+    #[test]
+    fn half_unit_residue_rounds_away_from_zero() {
+        // residue = 5_000 -> rounds up for positive, down (away from zero) for negative.
+        assert_eq!(compute_share(5_000, 1, RoundingMode::RoundHalfUp), 1);
+        assert_eq!(compute_share(4_999, 1, RoundingMode::RoundHalfUp), 0);
+        assert_eq!(compute_share(-5_000, 1, RoundingMode::RoundHalfUp), -1);
+        assert_eq!(compute_share(-4_999, 1, RoundingMode::RoundHalfUp), 0);
+        // Truncation never rounds up.
+        assert_eq!(compute_share(5_000, 1, RoundingMode::Truncation), 0);
+        assert_eq!(compute_share(-5_000, 1, RoundingMode::Truncation), 0);
+    }
+
+    #[test]
+    fn full_bps_returns_the_whole_amount() {
+        for amount in [-12_345_i128, -1, 1, 999, 12_345] {
+            for mode in [RoundingMode::Truncation, RoundingMode::RoundHalfUp] {
+                assert_eq!(compute_share(amount, MAX_BPS, mode), amount);
+                assert_eq!(share_and_dust(amount, MAX_BPS, mode), (amount, 0));
+            }
+        }
+    }
+
+    #[test]
+    fn bps_above_max_collapses_share_to_zero() {
+        // Explicitly out of the verified domain: share == 0 and the whole
+        // product is reported as dust.
+        let (result, dust) = share_and_dust(1_000, MAX_BPS + 1, RoundingMode::Truncation);
+        assert_eq!(result, 0);
+        assert_eq!(dust, 1_000 * (MAX_BPS as i128 + 1));
+        assert_eq!(
+            compute_share(1_000, MAX_BPS + 1, RoundingMode::RoundHalfUp),
+            0
+        );
+    }
+
+    #[test]
+    fn round_half_up_never_undershoots_truncation_for_positive_amounts() {
+        let bps_values = [
+            1_u32, 2, 3, 7, 50, 4_999, 5_000, 5_001, 7_500, 9_999, MAX_BPS,
+        ];
+        for amount in 1_i128..=200 {
+            for bps in bps_values {
+                let trunc = compute_share(amount, bps, RoundingMode::Truncation);
+                let round = compute_share(amount, bps, RoundingMode::RoundHalfUp);
+                assert!(
+                    round >= trunc,
+                    "round {round} < trunc {trunc} for amount={amount}, bps={bps}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn invariant_holds_across_a_sampled_grid() {
+        let mut bps = 0_u32;
+        while bps <= MAX_BPS {
+            for amount in [-9_999_i128, -5_000, -1, 0, 1, 4_999, 5_000, 9_999, 10_000] {
+                assert_invariants(amount, bps, RoundingMode::Truncation);
+                assert_invariants(amount, bps, RoundingMode::RoundHalfUp);
+            }
+            bps += 97;
+        }
+    }
+
+    #[test]
+    fn i128_min_is_exact_via_the_decomposition_path() {
+        // `i128::MIN * 10_000` overflows, but `compute_share` decomposes and
+        // clamps, returning the whole (negative) amount.
+        assert_eq!(
+            compute_share(i128::MIN, MAX_BPS, RoundingMode::Truncation),
+            i128::MIN
+        );
+        assert_eq!(
+            compute_share(i128::MIN, MAX_BPS, RoundingMode::RoundHalfUp),
+            i128::MIN
+        );
+        // Lower bps is also safe: result stays inside [MIN, 0].
+        let result = compute_share(i128::MIN, 5_000, RoundingMode::Truncation);
+        assert!(result >= i128::MIN && result <= 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "amount * bps overflow")]
+    fn naive_multiply_overflow_is_a_documented_panic() {
+        let _ = naive_product_or_panic(i128::MIN, MAX_BPS);
+    }
+
+    #[test]
+    #[should_panic(expected = "overflow")]
+    fn share_and_dust_panics_on_the_naive_path_at_i128_min() {
+        // Guards against a refactor that routes `share_and_dust` through the
+        // naive multiply while still claiming `i128::MIN` safety.
+        let _ = share_and_dust(i128::MIN, MAX_BPS, RoundingMode::Truncation);
+    }
+
+    #[test]
+    fn naive_reference_agrees_with_decomposition_in_domain() {
+        let cases: [(i128, u32); 8] = [
+            (1, 1),
+            (9_999, 7),
+            (-9_999, 7),
+            (12_345, 3_333),
+            (-12_345, 3_333),
+            (1_000_000, MAX_BPS),
+            (-1_000_000, 1),
+            (7, 9_999),
+        ];
+        for (amount, bps) in cases {
+            let (result, dust) = share_and_dust(amount, bps, RoundingMode::Truncation);
+            assert_eq!(
+                result * BPS_DENOM + dust,
+                naive_product_or_panic(amount, bps)
+            );
+        }
+    }
+}
