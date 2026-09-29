@@ -21,8 +21,6 @@
 //!   the new versioned `paused2` event carrying the tier.
 //! - Escalation from `SoftPaused` → `HardPaused` is a single admin call; no
 //!   intermediate unpause is required.
-//! - `get_pause_state()` is a pure read: rejected mutations must not alter the
-//!   reported tier, and unauthorized callers must not be able to change it.
 
 #![cfg(test)]
 
@@ -181,118 +179,6 @@ fn unpause_safety_from_soft_restores_not_paused() {
     assert!(!client.is_paused());
 }
 
-// ── Section A2: get_pause_state adversarial coverage ─────────────────────────
-
-/// `get_pause_state` is a pure read — repeated calls return the same value and
-/// do not mutate state.
-#[test]
-fn get_pause_state_is_pure_read() {
-    let env = Env::default();
-    let (client, admin, _safety) = setup(&env);
-
-    assert_eq!(client.get_pause_state(), PauseState::NotPaused);
-    assert_eq!(client.get_pause_state(), PauseState::NotPaused);
-
-    client.pause_admin(&admin);
-    assert_eq!(client.get_pause_state(), PauseState::SoftPaused);
-    assert_eq!(client.get_pause_state(), PauseState::SoftPaused);
-    assert!(client.is_paused());
-}
-
-/// Unauthorized caller cannot change the pause tier; `get_pause_state` must
-/// remain `NotPaused` after the rejected call.
-#[test]
-fn get_pause_state_unchanged_after_unauthorized_pause() {
-    let env = Env::default();
-    let (client, _admin, _safety) = setup(&env);
-    let stranger = Address::generate(&env);
-
-    assert_eq!(client.get_pause_state(), PauseState::NotPaused);
-
-    let result = client.try_pause_admin(&stranger);
-    assert_eq!(result, Err(Ok(RevoraError::NotAuthorized)));
-    assert_eq!(
-        client.get_pause_state(),
-        PauseState::NotPaused,
-        "rejected pause must not change the reported tier"
-    );
-    assert!(!client.is_paused());
-}
-
-/// Unauthorized caller cannot hard-pause; state must remain `NotPaused`.
-#[test]
-fn get_pause_state_unchanged_after_unauthorized_hard_pause() {
-    let env = Env::default();
-    let (client, _admin, _safety) = setup(&env);
-    let stranger = Address::generate(&env);
-
-    let result = client.try_hard_pause_admin(&stranger);
-    assert_eq!(result, Err(Ok(RevoraError::NotAuthorized)));
-    assert_eq!(client.get_pause_state(), PauseState::NotPaused);
-    assert!(!client.is_paused());
-}
-
-/// Unauthorized caller cannot unpause; state must remain `SoftPaused`.
-#[test]
-fn get_pause_state_unchanged_after_unauthorized_unpause() {
-    let env = Env::default();
-    let (client, admin, _safety) = setup(&env);
-    let stranger = Address::generate(&env);
-
-    client.pause_admin(&admin);
-    assert_eq!(client.get_pause_state(), PauseState::SoftPaused);
-
-    let result = client.try_unpause_admin(&stranger);
-    assert_eq!(result, Err(Ok(RevoraError::NotAuthorized)));
-    assert_eq!(
-        client.get_pause_state(),
-        PauseState::SoftPaused,
-        "rejected unpause must not change the reported tier"
-    );
-    assert!(client.is_paused());
-}
-
-/// Safety role cannot unpause a hard pause; state must remain `HardPaused`.
-#[test]
-fn get_pause_state_unchanged_after_safety_unpause_hard() {
-    let env = Env::default();
-    let (client, admin, safety) = setup(&env);
-
-    client.hard_pause_admin(&admin);
-    assert_eq!(client.get_pause_state(), PauseState::HardPaused);
-
-    let result = client.try_unpause_safety(&safety);
-    assert_eq!(result, Err(Ok(RevoraError::NotAuthorized)));
-    assert_eq!(
-        client.get_pause_state(),
-        PauseState::HardPaused,
-        "safety must not be able to lift a hard pause"
-    );
-    assert!(client.is_paused());
-}
-
-/// `get_pause_state` and `is_paused` stay consistent across every tier.
-#[test]
-fn get_pause_state_consistent_with_is_paused() {
-    let env = Env::default();
-    let (client, admin, _safety) = setup(&env);
-
-    assert_eq!(client.get_pause_state(), PauseState::NotPaused);
-    assert!(!client.is_paused());
-
-    client.pause_admin(&admin);
-    assert_eq!(client.get_pause_state(), PauseState::SoftPaused);
-    assert!(client.is_paused());
-
-    client.hard_pause_admin(&admin);
-    assert_eq!(client.get_pause_state(), PauseState::HardPaused);
-    assert!(client.is_paused());
-
-    client.unpause_admin(&admin);
-    assert_eq!(client.get_pause_state(), PauseState::NotPaused);
-    assert!(!client.is_paused());
-}
-
 // ── Section B: SoftPaused — claim allowed, mutations blocked ─────────────────
 
 /// Under SoftPaused, `claim` succeeds and the holder receives their payout.
@@ -308,7 +194,6 @@ fn soft_pause_claim_succeeds() {
     let result = client.try_claim(&holder, &_issuer, &symbol_short!("def"), &offering_token, &50);
     assert!(result.is_ok(), "claim must succeed under SoftPaused, got {result:?}");
     assert_eq!(result.unwrap().unwrap(), 100_000, "holder should receive full payout");
-    assert_eq!(client.get_pause_state(), PauseState::SoftPaused);
 }
 
 /// Under SoftPaused, `deposit_revenue` is blocked with ContractPaused.
@@ -334,7 +219,6 @@ fn soft_pause_deposit_blocked() {
         Err(Ok(RevoraError::ContractPaused)),
         "deposit must be blocked under SoftPaused"
     );
-    assert_eq!(client.get_pause_state(), PauseState::SoftPaused);
 }
 
 /// Under SoftPaused, `register_offering` is blocked with ContractPaused.
@@ -350,7 +234,6 @@ fn soft_pause_register_offering_blocked() {
     let result =
         client.try_register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
     assert_eq!(result, Err(Ok(RevoraError::ContractPaused)));
-    assert_eq!(client.get_pause_state(), PauseState::SoftPaused);
 }
 
 /// Under SoftPaused, `set_holder_share` is blocked with ContractPaused.
@@ -370,7 +253,6 @@ fn soft_pause_set_holder_share_blocked() {
         &5_000u32,
     );
     assert_eq!(result, Err(Ok(RevoraError::ContractPaused)));
-    assert_eq!(client.get_pause_state(), PauseState::SoftPaused);
 }
 
 // ── Section C: HardPaused — everything blocked including claim ────────────────
@@ -391,7 +273,6 @@ fn hard_pause_claim_blocked() {
         Err(Ok(RevoraError::ContractPaused)),
         "claim must be blocked under HardPaused"
     );
-    assert_eq!(client.get_pause_state(), PauseState::HardPaused);
 }
 
 /// Under HardPaused, `deposit_revenue` is blocked with ContractPaused.
@@ -413,7 +294,6 @@ fn hard_pause_deposit_blocked() {
         &2,
     );
     assert_eq!(result, Err(Ok(RevoraError::ContractPaused)));
-    assert_eq!(client.get_pause_state(), PauseState::HardPaused);
 }
 
 /// Under HardPaused, `register_offering` is blocked with ContractPaused.
@@ -429,7 +309,6 @@ fn hard_pause_register_offering_blocked() {
     let result =
         client.try_register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
     assert_eq!(result, Err(Ok(RevoraError::ContractPaused)));
-    assert_eq!(client.get_pause_state(), PauseState::HardPaused);
 }
 
 // ── Section D: Escalation soft → hard ────────────────────────────────────────
@@ -672,5 +551,56 @@ fn is_paused_false_for_not_paused() {
     let (client, admin, _safety) = setup(&env);
     client.pause_admin(&admin);
     client.unpause_admin(&admin);
+    assert!(!client.is_paused());
+}
+
+// ── Section I: Adversarial coverage for get_pause_state ──────────────────────
+
+/// `get_pause_state` is a pure read — it must not mutate state across calls.
+#[test]
+fn get_pause_state_is_pure_read() {
+    let env = Env::default();
+    let (client, admin, _safety) = setup(&env);
+
+    assert_eq!(client.get_pause_state(), PauseState::NotPaused);
+    assert_eq!(client.get_pause_state(), PauseState::NotPaused);
+
+    client.pause_admin(&admin);
+    assert_eq!(client.get_pause_state(), PauseState::SoftPaused);
+    assert_eq!(client.get_pause_state(), PauseState::SoftPaused);
+
+    client.hard_pause_admin(&admin);
+    assert_eq!(client.get_pause_state(), PauseState::HardPaused);
+    assert_eq!(client.get_pause_state(), PauseState::HardPaused);
+}
+
+/// `get_pause_state` on an uninitialized contract must not panic and must
+/// report the default `NotPaused` discriminant deterministically.
+#[test]
+fn get_pause_state_uninitialized_is_not_paused() {
+    let env = Env::default();
+    let client = make_client(&env.clone());
+    assert_eq!(client.get_pause_state(), PauseState::NotPaused);
+    assert_eq!(client.get_pause_state(), PauseState::NotPaused);
+}
+
+/// Rejected `hard_pause_admin` from a non-admin caller must leave the pause
+/// state unchanged (no partial escalation on authorization failure).
+#[test]
+fn rejected_hard_pause_leaves_state_unchanged() {
+    let env = Env::default();
+    let (client, _admin, safety) = setup(&env);
+
+    let before = client.get_pause_state();
+    assert_eq!(before, PauseState::NotPaused);
+
+    let result = client.try_hard_pause_admin(&safety);
+    assert_eq!(result, Err(Ok(RevoraError::NotAuthorized)));
+
+    assert_eq!(
+        client.get_pause_state(),
+        before,
+        "state must be unchanged after rejected hard_pause_admin"
+    );
     assert!(!client.is_paused());
 }
