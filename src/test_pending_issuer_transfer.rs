@@ -61,9 +61,7 @@
 
 #![cfg(test)]
 
-use crate::{
-    DataKey2, PendingTransfer, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient,
-};
+use crate::{DataKey2, PendingTransfer, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger},
@@ -118,9 +116,7 @@ fn setup() -> Tenant {
         env.storage().persistent().set(&DataKey2::IssuerRegistered(issuer.clone()), &true);
         env.storage().persistent().set(&DataKey2::NamespaceCount(issuer.clone()), &1_u32);
         env.storage().persistent().set(&DataKey2::NamespaceItem(issuer.clone(), 0), &NS);
-        env.storage()
-            .persistent()
-            .set(&DataKey2::NamespaceRegistered(issuer.clone(), NS), &true);
+        env.storage().persistent().set(&DataKey2::NamespaceRegistered(issuer.clone(), NS), &true);
     });
 
     Tenant { env, client, issuer, token }
