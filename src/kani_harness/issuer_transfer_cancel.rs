@@ -425,6 +425,7 @@ mod proofs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn base_storage(issuer: AddrId) -> StorageModel {
         StorageModel {
@@ -648,6 +649,80 @@ mod tests {
 
         let pt = model_cancel(&mut storage, issuer).unwrap();
         assert_eq!(pt.new_issuer, expected_new_issuer);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 1000, ..ProptestConfig::default() })]
+
+        #[test]
+        fn prop_model_cancel_adversarial(
+            offering_issuer in any::<AddrId>(),
+            lookup_issuer in any::<AddrId>(),
+            caller in any::<AddrId>(),
+            has_pending in any::<bool>(),
+            pending_new_issuer in any::<AddrId>(),
+            pending_timestamp in any::<u64>(),
+            pending_expiry in any::<u64>(),
+        ) {
+            let pending = if has_pending {
+                Some(PendingTransfer {
+                    new_issuer: pending_new_issuer,
+                    timestamp: pending_timestamp,
+                    expiry_secs: pending_expiry,
+                })
+            } else {
+                None
+            };
+            
+            let mut storage = StorageModel {
+                pending,
+                offering: OfferingState { issuer: offering_issuer },
+                offering_issuer_lookup: lookup_issuer,
+            };
+            
+            let baseline = storage.clone();
+            let result = model_cancel(&mut storage, caller);
+            
+            if offering_issuer == 0 {
+                assert_eq!(result, Err(TransferError::OfferingNotFound));
+                assert_eq!(storage, baseline, "state must be unchanged after rejected operation");
+            } else if caller != offering_issuer {
+                assert_eq!(result, Err(TransferError::NotAuthorized));
+                assert_eq!(storage, baseline, "state must be unchanged after rejected operation");
+            } else if !has_pending {
+                assert_eq!(result, Err(TransferError::NoTransferPending));
+                assert_eq!(storage, baseline, "state must be unchanged after rejected operation");
+            } else {
+                // Happy path
+                assert!(result.is_ok());
+                let returned = result.unwrap();
+                assert_eq!(returned, baseline.pending.unwrap());
+                assert!(storage.pending.is_none());
+                assert_eq!(storage.offering, baseline.offering);
+                assert_eq!(storage.offering_issuer_lookup, baseline.offering_issuer_lookup);
+            }
+        }
+
+        #[test]
+        fn prop_assert_issuer_lookup_consistent_adversarial(
+            offering_issuer in any::<AddrId>(),
+            lookup_issuer in any::<AddrId>(),
+        ) {
+            let storage = StorageModel {
+                pending: None,
+                offering: OfferingState { issuer: offering_issuer },
+                offering_issuer_lookup: lookup_issuer,
+            };
+            
+            if offering_issuer == lookup_issuer {
+                assert_issuer_lookup_consistent(&storage);
+            } else {
+                let result = std::panic::catch_unwind(|| {
+                    assert_issuer_lookup_consistent(&storage);
+                });
+                assert!(result.is_err(), "inconsistent lookup should panic");
+            }
+        }
     }
 }
 
